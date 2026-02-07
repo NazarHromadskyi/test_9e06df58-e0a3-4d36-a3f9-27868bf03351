@@ -17,7 +17,6 @@ import { CampaignReportRepository } from './repositories/campaign-report.reposit
 @Injectable()
 export class CampaignReportsService {
   private readonly logger = new Logger(CampaignReportsService.name);
-  private readonly batchSize = 500;
   private readonly cacheTtl = 300000; // 5 minutes
 
   constructor(
@@ -28,11 +27,12 @@ export class CampaignReportsService {
   ) {}
 
   /**
-   * Upserts a single page of campaign reports.
-   * Each page is processed in its own transaction for better memory efficiency.
-   * This method is designed for streaming processing - call it for each page.
+   * Upserts a batch of campaign reports inside a single transaction.
+   *
+   * Note: CSV parsing already yields batches (see CsvReportParser.iterateBatches),
+   * so we avoid re-batching and extra array copies here.
    */
-  async upsertReportsPage(reports: ParsedCampaignReport[]): Promise<number> {
+  async upsertReportsBatch(reports: ParsedCampaignReport[]): Promise<number> {
     if (reports.length === 0) {
       return 0;
     }
@@ -44,17 +44,13 @@ export class CampaignReportsService {
     let totalProcessed = 0;
 
     try {
-      for (let i = 0; i < reports.length; i += this.batchSize) {
-        const batch = reports.slice(i, i + this.batchSize);
-        const processed = await this.campaignReportRepository.upsertBatch(
-          batch,
-          queryRunner,
-        );
-        totalProcessed += processed;
-      }
+      totalProcessed = await this.campaignReportRepository.upsertBatch(
+        reports,
+        queryRunner,
+      );
 
       await queryRunner.commitTransaction();
-      this.logger.debug(`Page upserted: ${totalProcessed} records processed`);
+      this.logger.debug(`Batch upserted: ${totalProcessed} records processed`);
 
       return totalProcessed;
     } catch (error: unknown) {

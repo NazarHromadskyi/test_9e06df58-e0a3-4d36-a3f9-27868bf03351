@@ -29,7 +29,7 @@ interface PageProcessingStep {
 @Injectable()
 export class ProbationService {
   private readonly logger = new Logger(ProbationService.name);
-  private readonly parseBatchSize = 500;
+  private readonly csvBatchSize = 500;
 
   constructor(
     private readonly probationClient: ProbationClient,
@@ -58,11 +58,11 @@ export class ProbationService {
     params: FetchReportsParams,
     processor: PageProcessor,
   ): Promise<FetchAndProcessResult> {
-    const take = params.take || 1000;
+    const pageSize = params.take || 1000;
 
     const pipeline$ = this.buildFetchAndProcessPipeline(
       params,
-      take,
+      pageSize,
       processor,
     ).pipe(
       scan(
@@ -92,7 +92,7 @@ export class ProbationService {
 
   private buildFetchAndProcessPipeline(
     params: FetchReportsParams,
-    take: number,
+    pageSize: number,
     processor: PageProcessor,
   ): Observable<PageProcessingStep> {
     const seenCursors = new Set<string>();
@@ -103,7 +103,7 @@ export class ProbationService {
           from_date: params.from_date,
           to_date: params.to_date,
           event_name: params.event_name,
-          take,
+          take: pageSize,
         }),
         params.event_name,
         processor,
@@ -173,24 +173,24 @@ export class ProbationService {
       concatMap(async (response) => {
         let recordsFetched = 0;
         let recordsProcessed = 0;
-        let batchIndex = 0;
+        let csvBatchIndex = 0;
 
-        for await (const batch of this.csvParser.iterateBatches(
+        for await (const csvBatch of this.csvParser.iterateBatches(
           response.data.csv,
           eventName,
-          this.parseBatchSize,
+          this.csvBatchSize,
         )) {
-          batchIndex += 1;
+          csvBatchIndex += 1;
           this.logger.debug(
-            `Page ${pageNumber}, batch ${batchIndex}: ${batch.length} records parsed`,
+            `Page ${pageNumber}, CSV batch ${csvBatchIndex}: ${csvBatch.length} records parsed`,
           );
 
-          const processed = await processor(batch);
+          const processed = await processor(csvBatch);
           this.logger.debug(
-            `Page ${pageNumber}, batch ${batchIndex}: ${processed} records saved`,
+            `Page ${pageNumber}, CSV batch ${csvBatchIndex}: ${processed} records saved`,
           );
 
-          recordsFetched += batch.length;
+          recordsFetched += csvBatch.length;
           recordsProcessed += processed;
         }
 

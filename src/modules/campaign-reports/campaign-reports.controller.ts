@@ -69,7 +69,7 @@ export class CampaignReportsController {
         event_name: dto.event_name,
         take: dto.take,
       },
-      (reports) => this.campaignReportsService.upsertReportsPage(reports),
+      (batch) => this.campaignReportsService.upsertReportsBatch(batch),
     );
 
     this.logger.log(
