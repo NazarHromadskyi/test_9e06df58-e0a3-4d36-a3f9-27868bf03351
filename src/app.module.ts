@@ -6,12 +6,12 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import type { CacheManagerOptions } from '@nestjs/cache-manager';
+import KeyvRedis from '@keyv/redis';
 import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
 import { CampaignReportsModule } from './modules/campaign-reports/campaign-reports.module';
 import { ProbationModule } from './modules/probation/probation.module';
 import { HealthModule } from './modules/health/health.module';
-import { RedisKeyvStore } from './common/cache/redis-keyv.store';
 
 @Module({
   imports: [
@@ -35,17 +35,17 @@ import { RedisKeyvStore } from './common/cache/redis-keyv.store';
         const redisPassword = configService.get<string>('redis.password');
         const redisDb = configService.get<number>('redis.db') ?? 0;
 
+        const redisUrl = new URL(
+          `redis://${redisHost}:${redisPort}/${redisDb}`,
+        );
+        if (redisPassword) {
+          redisUrl.password = redisPassword;
+        }
+
         return {
           ttl,
           namespace: 'campaign-reports',
-          stores: [
-            new RedisKeyvStore({
-              host: redisHost,
-              port: redisPort,
-              password: redisPassword,
-              db: redisDb,
-            }),
-          ],
+          stores: [new KeyvRedis(redisUrl.toString())],
         } satisfies CacheManagerOptions;
       },
     }),

@@ -7,7 +7,7 @@ NestJS application for fetching and analyzing advertising campaign reports from 
 - Fetch campaign reports from external Probation API with automatic pagination
 - Store reports in PostgreSQL with deduplication (upsert on conflict)
 - Aggregate event counts by ad_id and date with pagination
-- Redis-backed caching for aggregated reports (optional in development, required for multi-instance production)
+- Redis-backed caching for aggregated reports via `@keyv/redis` (optional in development, required for multi-instance production)
 - Docker containerization for easy deployment
 - RxJS-based reactive data processing
 - Comprehensive error handling and logging
