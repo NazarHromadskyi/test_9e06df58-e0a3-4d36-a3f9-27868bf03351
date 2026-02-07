@@ -5,11 +5,16 @@ import { CampaignReportsService } from './campaign-reports.service';
 import { CampaignReportRepository } from './repositories/campaign-report.repository';
 import { CampaignReport } from './entities/campaign-report.entity';
 import { ProbationModule } from '../probation/probation.module';
+import { CampaignReportsCacheService } from './campaign-reports-cache.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([CampaignReport]), ProbationModule],
   controllers: [CampaignReportsController],
-  providers: [CampaignReportsService, CampaignReportRepository],
+  providers: [
+    CampaignReportsService,
+    CampaignReportsCacheService,
+    CampaignReportRepository,
+  ],
   exports: [CampaignReportsService],
 })
 export class CampaignReportsModule {}

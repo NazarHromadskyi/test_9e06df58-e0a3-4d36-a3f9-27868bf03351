@@ -72,6 +72,8 @@ export class CampaignReportsController {
       (batch) => this.campaignReportsService.upsertReportsBatch(batch),
     );
 
+    await this.campaignReportsService.invalidateAggregatedCache();
+
     this.logger.log(
       `Complete: ${result.pagesProcessed} pages, ${result.totalFetched} records`,
     );

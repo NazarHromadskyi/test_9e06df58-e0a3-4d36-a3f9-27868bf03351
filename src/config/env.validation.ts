@@ -4,32 +4,53 @@ import { z } from 'zod';
  * Environment variables validation schema.
  * Uses Zod for type-safe validation with fail-fast behavior.
  */
-export const envSchema = z.object({
-  // Application
-  PORT: z.coerce.number().positive().default(3000),
-  NODE_ENV: z
-    .enum(['development', 'production', 'test'])
-    .default('development'),
+export const envSchema = z
+  .object({
+    // Application
+    PORT: z.coerce.number().positive().default(3000),
+    NODE_ENV: z
+      .enum(['development', 'production', 'test'])
+      .default('development'),
 
-  // Database
-  DB_HOST: z.string().min(1, 'DB_HOST is required'),
-  DB_PORT: z.coerce.number().positive().default(5432),
-  DB_USERNAME: z.string().min(1, 'DB_USERNAME is required'),
-  DB_PASSWORD: z.string().min(1, 'DB_PASSWORD is required'),
-  DB_DATABASE: z.string().min(1, 'DB_DATABASE is required'),
+    // Redis (cache)
+    // In dev/test Redis is optional (falls back to in-memory cache).
+    // In production it must be provided for consistent caching across instances.
+    REDIS_HOST: z.string().min(1).optional(),
+    REDIS_PORT: z.coerce.number().positive().default(6379),
+    REDIS_PASSWORD: z
+      .string()
+      .optional()
+      .transform((v) => (v && v.trim() !== '' ? v : undefined)),
+    REDIS_DB: z.coerce.number().int().min(0).default(0),
 
-  // Probation API
-  PROBATION_API_URL: z
-    .string()
-    .url()
-    .default('https://probation.impulseapi.link'),
-  PROBATION_API_KEY: z
-    .string()
-    .min(
-      1,
-      'PROBATION_API_KEY is required - application cannot function without it',
-    ),
-});
+    // Database
+    DB_HOST: z.string().min(1, 'DB_HOST is required'),
+    DB_PORT: z.coerce.number().positive().default(5432),
+    DB_USERNAME: z.string().min(1, 'DB_USERNAME is required'),
+    DB_PASSWORD: z.string().min(1, 'DB_PASSWORD is required'),
+    DB_DATABASE: z.string().min(1, 'DB_DATABASE is required'),
+
+    // Probation API
+    PROBATION_API_URL: z
+      .string()
+      .url()
+      .default('https://probation.impulseapi.link'),
+    PROBATION_API_KEY: z
+      .string()
+      .min(
+        1,
+        'PROBATION_API_KEY is required - application cannot function without it',
+      ),
+  })
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production' && !env.REDIS_HOST) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'REDIS_HOST is required when NODE_ENV=production',
+        path: ['REDIS_HOST'],
+      });
+    }
+  });
 
 /**
  * Inferred type from the Zod schema for type-safe config access.

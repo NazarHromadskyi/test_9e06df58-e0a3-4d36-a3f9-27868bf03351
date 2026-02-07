@@ -7,6 +7,12 @@ import { validateEnv, EnvConfig } from './env.validation';
 export default (): {
   port: number;
   nodeEnv: string;
+  redis: {
+    host?: string;
+    port: number;
+    password?: string;
+    db: number;
+  };
   database: {
     host: string;
     port: number;
@@ -24,6 +30,12 @@ export default (): {
   return {
     port: env.PORT,
     nodeEnv: env.NODE_ENV,
+    redis: {
+      host: env.REDIS_HOST,
+      port: env.REDIS_PORT,
+      password: env.REDIS_PASSWORD,
+      db: env.REDIS_DB,
+    },
     database: {
       host: env.DB_HOST,
       port: env.DB_PORT,
