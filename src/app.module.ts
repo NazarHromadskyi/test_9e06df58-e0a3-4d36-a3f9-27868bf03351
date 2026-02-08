@@ -1,54 +1,15 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { CacheModule } from '@nestjs/cache-manager';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { ConfigService } from '@nestjs/config';
-import type { CacheManagerOptions } from '@nestjs/cache-manager';
-import KeyvRedis from '@keyv/redis';
-import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
+import { InfrastructureModule } from './infrastructure/infrastructure.module';
 import { CampaignReportsModule } from './modules/campaign-reports/campaign-reports.module';
-import { ProbationModule } from './modules/probation/probation.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-    }),
-    CacheModule.registerAsync({
-      isGlobal: true,
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService): CacheManagerOptions => {
-        const ttl = 300000; // 5 minutes
-        const redisHost = configService.get<string>('redis.host');
-
-        if (!redisHost) {
-          return { ttl } satisfies CacheManagerOptions;
-        }
-
-        const redisPort = configService.get<number>('redis.port') ?? 6379;
-        const redisPassword = configService.get<string>('redis.password');
-        const redisDb = configService.get<number>('redis.db') ?? 0;
-
-        const redisUrl = new URL(
-          `redis://${redisHost}:${redisPort}/${redisDb}`,
-        );
-        if (redisPassword) {
-          redisUrl.password = redisPassword;
-        }
-
-        return {
-          ttl,
-          namespace: 'campaign-reports',
-          stores: [new KeyvRedis(redisUrl.toString())],
-        } satisfies CacheManagerOptions;
-      },
-    }),
+    InfrastructureModule,
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
@@ -69,7 +30,6 @@ import { HealthModule } from './modules/health/health.module';
     ]),
     DatabaseModule,
     CampaignReportsModule,
-    ProbationModule,
     HealthModule,
   ],
   providers: [
