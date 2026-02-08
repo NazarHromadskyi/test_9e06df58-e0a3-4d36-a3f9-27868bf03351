@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, QueryRunner } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  QueryRunner,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { CampaignReport } from '../entities/campaign-report.entity';
 import { ParsedCampaignReport } from '../../probation/interfaces/probation-response.interface';
 import { AggregatedReportItem } from '../dto/aggregated-reports.dto';
@@ -95,40 +100,42 @@ export class CampaignReportRepository {
     const fromDateTime = DateUtils.toUtcDateTimeString(from_date);
     const toDateTime = DateUtils.toUtcDateTimeString(to_date);
 
-    const queryBuilder = this.repository
-      .createQueryBuilder('cr')
-      .select('cr.ad_id', 'ad_id')
-      .addSelect("DATE(cr.event_time AT TIME ZONE 'UTC')", 'date')
-      .addSelect('COUNT(*)', 'event_count')
-      .where('cr.event_time >= :from_date', { from_date: fromDateTime })
-      .andWhere('cr.event_time <= :to_date', { to_date: toDateTime })
-      .andWhere('cr.event_name = :event_name', { event_name })
-      .groupBy('cr.ad_id')
-      .addGroupBy("DATE(cr.event_time AT TIME ZONE 'UTC')")
-      .orderBy('date', 'DESC')
-      .addOrderBy('event_count', 'DESC');
-
-    const countQuery = this.dataSource
-      .createQueryBuilder()
-      .select('COUNT(*)', 'count')
-      .from(`(${queryBuilder.getQuery()})`, 'subquery')
-      .setParameters(queryBuilder.getParameters());
-
-    const countResult = await countQuery.getRawOne<{ count: string }>();
-    const total = parseInt(countResult?.count ?? '0', 10);
+    const aggregatedBaseQuery = this.buildAggregatedBaseQuery({
+      from_date: fromDateTime,
+      to_date: toDateTime,
+      event_name,
+    });
 
     interface RawAggregatedRow {
       ad_id: string;
       date: string;
       event_count: string;
+      total: string;
     }
 
-    const results = await queryBuilder
+    const rows = await this.dataSource
+      .createQueryBuilder()
+      .select('agg.ad_id', 'ad_id')
+      .addSelect('agg.date', 'date')
+      .addSelect('agg.event_count', 'event_count')
+      .addSelect('COUNT(*) OVER()', 'total')
+      .from(`(${aggregatedBaseQuery.getQuery()})`, 'agg')
+      .setParameters(aggregatedBaseQuery.getParameters())
+      .orderBy('agg.date', 'DESC')
+      .addOrderBy('agg.event_count', 'DESC')
+      .addOrderBy('agg.ad_id', 'ASC')
       .offset(offset)
       .limit(limit)
       .getRawMany<RawAggregatedRow>();
 
-    const items: AggregatedReportItem[] = results.map((row) => ({
+    // If pagination produces 0 rows (e.g. offset beyond total), window functions can't return total.
+    // Fall back to a cheap COUNT(*) over the aggregated subquery.
+    const total =
+      rows.length > 0
+        ? parseInt(rows[0].total, 10)
+        : await this.getAggregatedTotalCount(aggregatedBaseQuery);
+
+    const items: AggregatedReportItem[] = rows.map((row) => ({
       ad_id: row.ad_id,
       date: row.date,
       event_count: parseInt(row.event_count, 10),
@@ -150,5 +157,37 @@ export class CampaignReportRepository {
       map.set(key, r);
     }
     return Array.from(map.values());
+  }
+
+  private buildAggregatedBaseQuery(params: {
+    from_date: string;
+    to_date: string;
+    event_name: string;
+  }): SelectQueryBuilder<CampaignReport> {
+    const { from_date, to_date, event_name } = params;
+
+    return this.repository
+      .createQueryBuilder('cr')
+      .select('cr.ad_id', 'ad_id')
+      .addSelect("DATE(cr.event_time AT TIME ZONE 'UTC')", 'date')
+      .addSelect('COUNT(*)', 'event_count')
+      .where('cr.event_time >= :from_date', { from_date })
+      .andWhere('cr.event_time <= :to_date', { to_date })
+      .andWhere('cr.event_name = :event_name', { event_name })
+      .groupBy('cr.ad_id')
+      .addGroupBy("DATE(cr.event_time AT TIME ZONE 'UTC')");
+  }
+
+  private async getAggregatedTotalCount(
+    aggregatedBaseQuery: SelectQueryBuilder<CampaignReport>,
+  ): Promise<number> {
+    const countQuery = this.dataSource
+      .createQueryBuilder()
+      .select('COUNT(*)', 'count')
+      .from(`(${aggregatedBaseQuery.getQuery()})`, 'agg')
+      .setParameters(aggregatedBaseQuery.getParameters());
+
+    const countResult = await countQuery.getRawOne<{ count: string }>();
+    return parseInt(countResult?.count ?? '0', 10);
   }
 }
