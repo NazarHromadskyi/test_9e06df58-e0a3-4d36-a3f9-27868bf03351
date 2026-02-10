@@ -1,81 +1,98 @@
 # Campaign Reports API
 
-NestJS application for fetching and analyzing advertising campaign reports from Probation API.
+NestJS service for ingesting campaign reports from Probation API, storing them in PostgreSQL, and returning aggregated analytics.
 
-## Features
+## Current Architecture
 
-- Fetch campaign reports from external Probation API with automatic pagination
-- Store reports in PostgreSQL with deduplication (upsert on conflict)
-- Aggregate event counts by ad_id and date with pagination
-- Docker containerization for easy deployment
-- RxJS-based reactive data processing
-- Comprehensive error handling and logging
+The app runs in two processes:
+
+1. **API process** (`src/main.ts`)  
+   Exposes HTTP endpoints, enqueues long-running fetch jobs, returns `202 Accepted` with a `job_id`.
+2. **Worker process** (`src/worker.ts`)  
+   Listens to BullMQ queue in Redis, fetches/processes Probation data in background, writes to DB.
+
+Both processes share:
+- PostgreSQL (data)
+- Redis (BullMQ queue + cache)
+- common core module logic (`CampaignReportsCoreModule`)
+
+### Module layering (`campaign-reports`)
+
+- `CampaignReportsModule` = HTTP facade (controller only)
+- `CampaignReportsCoreModule` = core/business layer (services, repository, queue wiring, Probation integration)
+
+This keeps HTTP concerns separate from background processing logic.
+
+## Key Features
+
+- Async background ingestion via BullMQ (`POST /campaign-reports/fetch`)
+- Deterministic job deduplication by request payload
+- Job status polling and cancel endpoint
+- Upsert into PostgreSQL with transactional batches
+- Aggregated reports endpoint with Redis-backed caching
 
 ## Tech Stack
 
-- **NestJS** - Node.js framework
-- **TypeORM** - ORM for PostgreSQL
-- **PostgreSQL** - Database
-- **RxJS** - Reactive programming
-- **Docker** - Containerization
+- NestJS
+- TypeORM + PostgreSQL
+- BullMQ + Redis
+- RxJS
+- Docker / Docker Compose
 
 ## Prerequisites
 
 - Node.js 20+
-- Docker & Docker Compose
 - npm
+- Docker + Docker Compose
 
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone <repository-url>
-cd test_9e06df58-e0a3-4d36-a3f9-27868bf03351
-```
-
-### 2. Install dependencies
-
-```bash
-npm install
-```
-
-### 3. Configure environment
+## Setup
 
 ```bash
 cp .env.example .env
-# Edit .env with your configuration
+npm install
 ```
 
-## Running the Application
+## Run
 
-### Using Docker (recommended)
+### Docker Compose (recommended)
+
+Starts `postgres`, `redis`, `app`, and `worker`:
 
 ```bash
-# Start all services (PostgreSQL + App)
-docker-compose up -d
-
-# View logs
-docker-compose logs -f app
+docker compose up -d
+docker compose logs -f app worker
 ```
 
-### Local Development
+Stop:
 
 ```bash
-# Start only PostgreSQL
-docker-compose up -d postgres
+docker compose down
+```
 
-# Run migrations and start app
+### Local development
+
+Start infra only:
+
+```bash
+docker compose up -d postgres redis
+```
+
+Run API and worker in separate terminals:
+
+```bash
 npm run start:dev
+npm run start:worker
 ```
 
 ## API Endpoints
 
-### POST /campaign-reports/fetch
+Swagger: `http://localhost:3000/api/docs`
 
-Fetch campaign reports from Probation API and save to database.
+### `POST /campaign-reports/fetch`
 
-**Request Body:**
+Enqueue fetch job and return immediately.
+
+Request:
 
 ```json
 {
@@ -86,144 +103,111 @@ Fetch campaign reports from Probation API and save to database.
 }
 ```
 
-**Response:**
+Response (`202`):
 
 ```json
 {
   "success": true,
-  "message": "Reports fetched and saved successfully",
+  "message": "Fetch job enqueued",
   "data": {
-    "total_processed": 1500,
-    "duration_ms": 2345
+    "job_id": "cr_fetch_...",
+    "deduped": false,
+    "status_url": "/campaign-reports/fetch/cr_fetch_..."
   }
 }
 ```
 
-### GET /campaign-reports/aggregated
+### `GET /campaign-reports/fetch/:jobId`
 
-Get aggregated event counts by ad_id and date.
+Get job state/progress/result.
 
-**Query Parameters:**
+### `POST /campaign-reports/fetch/:jobId/cancel`
 
-- `from_date` (required): Start date (YYYY-MM-DD)
-- `to_date` (required): End date (YYYY-MM-DD)
-- `event_name` (required): Event type (install | purchase)
-- `take` (optional): Items per page (default: 10)
-- `page` (optional): Page number (default: 1)
+Cancel queued job (cannot cancel `active` jobs).
 
-**Example:**
+### `GET /campaign-reports/aggregated`
 
-```
-GET /campaign-reports/aggregated?from_date=2024-01-01&to_date=2024-01-31&event_name=install&take=10&page=1
-```
+Aggregated counts by `ad_id` and date, with pagination.
 
-**Response:**
+Query params:
+- `from_date` (required)
+- `to_date` (required)
+- `event_name` (required)
+- `take` (optional, default `10`)
+- `page` (optional, default `1`)
 
-```json
-{
-  "data": [
-    {
-      "ad_id": "ad_123",
-      "date": "2024-01-15",
-      "event_count": 150
-    }
-  ],
-  "meta": {
-    "page": 1,
-    "take": 10,
-    "total": 100,
-    "totalPages": 10,
-    "hasNextPage": true,
-    "hasPreviousPage": false
-  }
-}
-```
+### `GET /campaign-reports/stats`
 
-### GET /campaign-reports/stats
+Returns total stored records.
 
-Get total record count.
+### Health
 
-**Response:**
-
-```json
-{
-  "total_records": 15000
-}
-```
-
-## Project Structure
-
-```
-src/
-├── main.ts                          # Application entry point
-├── app.module.ts                    # Root module
-├── config/
-│   ├── configuration.ts             # Environment configuration
-│   └── env.validation.ts             # Environment validation schema
-├── common/
-│   ├── dto/
-│   │   ├── pagination.dto.ts        # Pagination DTO
-│   │   └── date-range.dto.ts        # Date range and event name DTOs
-│   ├── filters/
-│   │   └── http-exception.filter.ts  # Global exception filter
-│   ├── interceptors/
-│   │   └── logging.interceptor.ts    # Request logging
-│   ├── operators/
-│   │   └── retry-with-backoff.operator.ts  # RxJS retry with backoff
-│   ├── parsers/
-│   │   └── csv-report.parser.ts      # CSV streaming parser for Probation API
-│   ├── utils/
-│   │   └── date.utils.ts             # UTC date parsing and formatting
-│   └── validators/
-│       └── date-range.validator.ts   # Date range validation
-├── database/
-│   ├── database.module.ts            # TypeORM configuration
-│   └── migrations/
-│       ├── 1706700000000-CreateCampaignReports.ts
-│       └── 1706700001000-AddAggregationIndex.ts
-├── modules/
-│   ├── campaign-reports/
-│   │   ├── campaign-reports.module.ts
-│   │   ├── campaign-reports.controller.ts
-│   │   ├── campaign-reports.service.ts
-│   │   ├── entities/
-│   │   │   └── campaign-report.entity.ts
-│   │   ├── repositories/
-│   │   │   └── campaign-report.repository.ts
-│   │   └── dto/
-│   │       ├── fetch-reports.dto.ts
-│   │       └── aggregated-reports.dto.ts
-│   ├── health/
-│   │   ├── health.module.ts
-│   │   └── health.controller.ts
-│   └── probation/
-│       ├── probation.module.ts
-│       ├── probation.service.ts
-│       ├── probation.client.ts       # HTTP client for Probation API
-│       └── interfaces/
-│           └── probation-response.interface.ts
-```
+- `GET /health`
+- `GET /health/liveness`
+- `GET /health/readiness`
 
 ## Environment Variables
 
-| Variable            | Description       | Default                           |
-| ------------------- | ----------------- | --------------------------------- |
-| `PORT`              | Application port  | 3000                              |
-| `NODE_ENV`          | Environment       | development                       |
-| `DB_HOST`           | PostgreSQL host   | localhost                         |
-| `DB_PORT`           | PostgreSQL port   | 5432                              |
-| `DB_USERNAME`       | Database username | postgres                          |
-| `DB_PASSWORD`       | Database password | postgres                          |
-| `DB_DATABASE`       | Database name     | campaign_reports                  |
-| `PROBATION_API_URL` | Probation API URL | https://probation.impulseapi.link |
-| `PROBATION_API_KEY` | Probation API key | -                                 |
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PORT` | API port | `3000` |
+| `NODE_ENV` | Environment | `development` |
+| `DB_HOST` | PostgreSQL host | `localhost` |
+| `DB_PORT` | PostgreSQL port | `5432` |
+| `DB_USERNAME` | PostgreSQL user | `postgres` |
+| `DB_PASSWORD` | PostgreSQL password | `postgres` |
+| `DB_DATABASE` | PostgreSQL database | `campaign_reports` |
+| `REDIS_HOST` | Redis host | empty in dev (`in-memory cache fallback`) |
+| `REDIS_PORT` | Redis port | `6379` |
+| `REDIS_DB` | Redis DB index | `0` |
+| `REDIS_PASSWORD` | Redis password | empty |
+| `PROBATION_API_URL` | Probation API base URL | `https://probation.impulseapi.link` |
+| `PROBATION_API_KEY` | Probation API key | required for fetch |
 
 ## Scripts
 
 ```bash
-npm run start:dev    # Development mode with hot reload
-npm run start:prod   # Production mode
-npm run build        # Build the application
-npm run lint         # Run ESLint
-npm run format       # Format code with Prettier
+npm run build
+npm run start:dev
+npm run start:prod
+npm run start:worker
+npm run start:worker:prod
+npm run test
+npm run lint
+```
+
+## Project Structure
+
+```text
+src/
+  main.ts
+  worker.ts
+  app.module.ts
+  worker.module.ts
+  infrastructure/
+    infrastructure.module.ts
+  database/
+    database.module.ts
+    migrations/
+  modules/
+    campaign-reports/
+      campaign-reports.module.ts         # HTTP facade
+      campaign-reports-core.module.ts    # core/business module
+      campaign-reports.controller.ts
+      campaign-reports.service.ts
+      campaign-reports-cache.service.ts
+      jobs/
+        campaign-reports-fetch.constants.ts
+        campaign-reports-fetch-jobs.service.ts
+        campaign-reports-fetch.processor.ts
+      dto/
+      entities/
+      repositories/
+    probation/
+      probation.module.ts
+      probation.client.ts
+      probation.service.ts
+    health/
+      health.module.ts
+      health.controller.ts
 ```

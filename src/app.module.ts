@@ -1,26 +1,15 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { CacheModule } from '@nestjs/cache-manager';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
+import { InfrastructureModule } from './infrastructure/infrastructure.module';
 import { CampaignReportsModule } from './modules/campaign-reports/campaign-reports.module';
-import { ProbationModule } from './modules/probation/probation.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-    }),
-    CacheModule.register({
-      isGlobal: true,
-      ttl: 300000, // 5 minutes default TTL
-      max: 100, // Maximum number of items in cache
-    }),
+    InfrastructureModule,
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
@@ -41,7 +30,6 @@ import { HealthModule } from './modules/health/health.module';
     ]),
     DatabaseModule,
     CampaignReportsModule,
-    ProbationModule,
     HealthModule,
   ],
   providers: [

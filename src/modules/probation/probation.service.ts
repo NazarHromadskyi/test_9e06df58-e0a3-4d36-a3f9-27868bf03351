@@ -10,8 +10,6 @@ import {
   throwError,
   defer,
   concatMap,
-  map,
-  reduce,
 } from 'rxjs';
 import {
   FetchReportsParams,
@@ -31,7 +29,7 @@ interface PageProcessingStep {
 @Injectable()
 export class ProbationService {
   private readonly logger = new Logger(ProbationService.name);
-  private readonly parseBatchSize = 500;
+  private readonly csvBatchSize = 500;
 
   constructor(
     private readonly probationClient: ProbationClient,
@@ -60,11 +58,11 @@ export class ProbationService {
     params: FetchReportsParams,
     processor: PageProcessor,
   ): Promise<FetchAndProcessResult> {
-    const take = params.take || 1000;
+    const pageSize = params.take || 1000;
 
     const pipeline$ = this.buildFetchAndProcessPipeline(
       params,
-      take,
+      pageSize,
       processor,
     ).pipe(
       scan(
@@ -94,7 +92,7 @@ export class ProbationService {
 
   private buildFetchAndProcessPipeline(
     params: FetchReportsParams,
-    take: number,
+    pageSize: number,
     processor: PageProcessor,
   ): Observable<PageProcessingStep> {
     const seenCursors = new Set<string>();
@@ -105,7 +103,7 @@ export class ProbationService {
           from_date: params.from_date,
           to_date: params.to_date,
           event_name: params.event_name,
-          take,
+          take: pageSize,
         }),
         params.event_name,
         processor,
@@ -156,11 +154,11 @@ export class ProbationService {
    * complete before expand operator triggers the next page fetch.
    *
    * Memory optimization flow:
-   * 1. parseInBatches emits multiple batches (e.g., 500 records each)
-   * 2. Each batch is immediately processed (saved to DB) via concatMap
+   * 1. iterateBatches yields multiple batches (e.g., 500 records each)
+   * 2. Each batch is processed sequentially (saved to DB) via await processor(batch)
    * 3. Batch is freed from memory after processing
-   * 4. reduce aggregates all batch results into single PageProcessingStep
-   * 5. This single step is passed to expand for pagination decision
+   * 4. Aggregate counters are updated per batch
+   * 5. Single PageProcessingStep is passed to expand for pagination decision
    *
    * This ensures only one batch is in memory at a time, not the entire page.
    */
@@ -172,42 +170,36 @@ export class ProbationService {
   ): Observable<PageProcessingStep> {
     return fetch$.pipe(
       tap(() => this.logger.debug(`Processing page ${pageNumber}`)),
-      concatMap((response) =>
-        this.csvParser
-          .parseInBatches(response.data.csv, eventName, this.parseBatchSize)
-          .pipe(
-            concatMap((batch, batchIndex) => {
-              this.logger.debug(
-                `Page ${pageNumber}, batch ${batchIndex + 1}: ${batch.length} records parsed`,
-              );
+      concatMap(async (response) => {
+        let recordsFetched = 0;
+        let recordsProcessed = 0;
+        let csvBatchIndex = 0;
 
-              return defer(() => processor(batch)).pipe(
-                tap((processed) =>
-                  this.logger.debug(
-                    `Page ${pageNumber}, batch ${batchIndex + 1}: ${processed} records saved`,
-                  ),
-                ),
-                // Map to batch statistics
-                map((processed) => ({
-                  recordsFetched: batch.length,
-                  recordsProcessed: processed,
-                })),
-              );
-            }),
-            reduce(
-              (acc, batchResult) => ({
-                recordsFetched: acc.recordsFetched + batchResult.recordsFetched,
-                recordsProcessed:
-                  acc.recordsProcessed + batchResult.recordsProcessed,
-              }),
-              { recordsFetched: 0, recordsProcessed: 0 },
-            ),
-            map((aggregated) => ({
-              ...aggregated,
-              nextCursor: response.data.pagination?.next,
-            })),
-          ),
-      ),
+        for await (const csvBatch of this.csvParser.iterateBatches(
+          response.data.csv,
+          eventName,
+          this.csvBatchSize,
+        )) {
+          csvBatchIndex += 1;
+          this.logger.debug(
+            `Page ${pageNumber}, CSV batch ${csvBatchIndex}: ${csvBatch.length} records parsed`,
+          );
+
+          const processed = await processor(csvBatch);
+          this.logger.debug(
+            `Page ${pageNumber}, CSV batch ${csvBatchIndex}: ${processed} records saved`,
+          );
+
+          recordsFetched += csvBatch.length;
+          recordsProcessed += processed;
+        }
+
+        return {
+          recordsFetched,
+          recordsProcessed,
+          nextCursor: response.data.pagination?.next,
+        };
+      }),
     );
   }
 }

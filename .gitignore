@@ -32,3 +32,9 @@ coverage/
 
 # Misc
 *.tsbuildinfo
+
+# Local npm cache (used in restricted environments)
+.npm-cache/
+
+# Local notes
+meta-info/

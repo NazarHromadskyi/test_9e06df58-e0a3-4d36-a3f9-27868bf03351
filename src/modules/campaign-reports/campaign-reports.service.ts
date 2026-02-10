@@ -1,5 +1,4 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
-import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
+import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ParsedCampaignReport } from '../probation/interfaces/probation-response.interface';
 import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
@@ -8,6 +7,7 @@ import {
   AggregatedReportItem,
 } from './dto/aggregated-reports.dto';
 import { CampaignReportRepository } from './repositories/campaign-report.repository';
+import { CampaignReportsCacheService } from './campaign-reports-cache.service';
 
 /**
  * Service for managing campaign reports.
@@ -17,22 +17,20 @@ import { CampaignReportRepository } from './repositories/campaign-report.reposit
 @Injectable()
 export class CampaignReportsService {
   private readonly logger = new Logger(CampaignReportsService.name);
-  private readonly batchSize = 500;
-  private readonly cacheTtl = 300000; // 5 minutes
 
   constructor(
     private readonly campaignReportRepository: CampaignReportRepository,
     private readonly dataSource: DataSource,
-    @Inject(CACHE_MANAGER)
-    private readonly cacheManager: Cache,
+    private readonly cacheService: CampaignReportsCacheService,
   ) {}
 
   /**
-   * Upserts a single page of campaign reports.
-   * Each page is processed in its own transaction for better memory efficiency.
-   * This method is designed for streaming processing - call it for each page.
+   * Upserts a batch of campaign reports inside a single transaction.
+   *
+   * Note: CSV parsing already yields batches (see CsvReportParser.iterateBatches),
+   * so we avoid re-batching and extra array copies here.
    */
-  async upsertReportsPage(reports: ParsedCampaignReport[]): Promise<number> {
+  async upsertReportsBatch(reports: ParsedCampaignReport[]): Promise<number> {
     if (reports.length === 0) {
       return 0;
     }
@@ -44,17 +42,13 @@ export class CampaignReportsService {
     let totalProcessed = 0;
 
     try {
-      for (let i = 0; i < reports.length; i += this.batchSize) {
-        const batch = reports.slice(i, i + this.batchSize);
-        const processed = await this.campaignReportRepository.upsertBatch(
-          batch,
-          queryRunner,
-        );
-        totalProcessed += processed;
-      }
+      totalProcessed = await this.campaignReportRepository.upsertBatch(
+        reports,
+        queryRunner,
+      );
 
       await queryRunner.commitTransaction();
-      this.logger.debug(`Page upserted: ${totalProcessed} records processed`);
+      this.logger.debug(`Batch upserted: ${totalProcessed} records processed`);
 
       return totalProcessed;
     } catch (error: unknown) {
@@ -77,36 +71,36 @@ export class CampaignReportsService {
   async getAggregatedReports(
     params: AggregatedReportDto,
   ): Promise<PaginatedResponseDto<AggregatedReportItem>> {
-    const { from_date, to_date, event_name, page = 1, take = 10 } = params;
-
-    const cacheKey = `aggregated:${from_date}:${to_date}:${event_name}:${page}:${take}`;
-
-    const cached =
-      await this.cacheManager.get<PaginatedResponseDto<AggregatedReportItem>>(
-        cacheKey,
-      );
+    const cached = await this.cacheService.getAggregated(params);
     if (cached) {
-      this.logger.debug(`Cache hit for key: ${cacheKey}`);
       return cached;
     }
 
-    this.logger.debug(`Cache miss for key: ${cacheKey}`);
-
+    const { page = 1, take = 10 } = params;
     const offset = (page - 1) * take;
 
     const { items, total } = await this.campaignReportRepository.getAggregated({
-      from_date,
-      to_date,
-      event_name,
+      from_date: params.from_date,
+      to_date: params.to_date,
+      event_name: params.event_name,
       offset,
       limit: take,
     });
 
     const response = new PaginatedResponseDto(items, total, page, take);
 
-    await this.cacheManager.set(cacheKey, response, this.cacheTtl);
+    await this.cacheService.setAggregated(params, response);
 
     return response;
+  }
+
+  async invalidateAggregatedCache(): Promise<void> {
+    try {
+      await this.cacheService.invalidateAggregated();
+    } catch (error: unknown) {
+      const err = error as Error;
+      this.logger.warn(`Failed to invalidate cache: ${err.message}`);
+    }
   }
 
   async getTotalCount(): Promise<number> {
